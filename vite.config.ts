@@ -4,7 +4,7 @@ import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
-  base: '/shop-inventory/', // <-- Add this line! Replace 'shop-inventory' with your exact GitHub repo name if it's different.
+  base: '/shop-inventory/', // <-- Make sure this line is exactly here!
   server: {
     allowedHosts: true
   }
