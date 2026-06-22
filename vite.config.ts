@@ -4,7 +4,8 @@ import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  base: '/shop-inventory/', // <-- Add this line! Replace 'shop-inventory' with your exact GitHub repo name if it's different.
   server: {
-    allowedHosts: true // This tells Vite 6 to accept traffic from any public tunnel link
+    allowedHosts: true
   }
 })
