@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Search, Plus, X, Package, FolderPlus, ChevronDown, ImageIcon, Trash2, Edit2 } from 'lucide-react'
+import { Search, Plus, X, Package, ChevronDown, ImageIcon, Trash2, Edit2, Check } from 'lucide-react'
 import { supabase, type Product, type Category } from './lib/supabase'
 import { offlineDb } from './lib/offlineDb'
 
@@ -26,7 +26,7 @@ function App() {
     fetchData()
   }, [])
 
-  // Auto-Sync: Runs when your computer connects to the internet
+  // Auto-Sync Network Listener
   useEffect(() => {
     async function syncOfflineData() {
       if (!navigator.onLine) return
@@ -39,12 +39,10 @@ function App() {
           let error, data
 
           if (typeof id === 'string' && id.startsWith('local_')) {
-            // New offline item -> Send INSERT
             const res = await supabase.from('products').insert(cleanData).select().single()
             error = res.error
             data = res.data
           } else {
-            // Edited offline item -> Send UPDATE
             const res = await supabase.from('products').update(cleanData).eq('id', id).select().single()
             error = res.error
             data = res.data
@@ -125,13 +123,58 @@ function App() {
 
   async function handleAddCategory() {
     if (!newCategoryName.trim()) return
-    const { data, error } = await supabase.from('categories').insert({ name: newCategoryName.trim() }).select().single()
-    if (!error && data) {
-      setCategories([...categories, data])
-      setFormData({ ...formData, category_id: String(data.id) })
+    try {
+      const { data, error } = await supabase
+        .from('categories')
+        .insert({ name: newCategoryName.trim() })
+        .select()
+        .single()
+        
+      if (!error && data) {
+        setCategories([...categories, data].sort((a, b) => a.name.localeCompare(b.name)))
+        setFormData({ ...formData, category_id: String(data.id) })
+        setNewCategoryName('')
+        setIsAddingCategory(false)
+      } else if (error) {
+        throw error
+      }
+    } catch (err: any) {
+      alert('Failed to create category: ' + err.message)
     }
-    setNewCategoryName('')
-    setIsAddingCategory(false)
+  }
+
+  // New Delete Category function
+  async function handleDeleteCategory() {
+    if (!formData.category_id) return
+    
+    const selectedCat = categories.find(c => String(c.id) === formData.category_id)
+    if (!selectedCat) return
+
+    const confirmDelete = window.confirm(`Are you sure you want to delete the category "${selectedCat.name}"?\nProducts assigned to this category will become unassigned.`)
+    if (!confirmDelete) return
+
+    try {
+      if (navigator.onLine) {
+        const { error } = await supabase
+          .from('categories')
+          .delete()
+          .eq('id', selectedCat.id)
+
+        if (error) throw error
+      } else {
+        alert("You must be online to delete categories from the cloud database.")
+        return
+      }
+
+      // Remove from state array and clear form selection field
+      setCategories(categories.filter(c => String(c.id) !== formData.category_id))
+      setFormData({ ...formData, category_id: '' })
+      
+      // Refresh list to show updated structures immediately
+      fetchData()
+    } catch (err: any) {
+      alert('Failed to delete category: ' + err.message)
+    }
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -184,11 +227,13 @@ function App() {
   function resetForm() {
     setFormData({ name: '', image_url: '', cost_price: '', selling_price: '', max_retail_price: '', category_id: '' })
     setIsAddingCategory(false)
+    setNewCategoryName('')
     setEditingProduct(null)
   }
 
   return (
     <div className="min-h-screen bg-slate-50">
+      {/* Sticky Header */}
       <header className="sticky top-0 z-10 bg-white border-b border-slate-200 shadow-sm">
         <div className="max-w-7xl mx-auto px-4 py-4">
           <div className="flex items-center justify-between mb-4">
@@ -207,6 +252,7 @@ function App() {
         </div>
       </header>
 
+      {/* Product List */}
       <main className="max-w-4xl mx-auto px-4 py-6 pb-24">
         <div className="space-y-2">
           {filteredProducts.map((product) => (
@@ -235,8 +281,10 @@ function App() {
         </div>
       </main>
 
+      {/* Floating Action Button */}
       <button onClick={() => setIsModalOpen(true)} className="fixed bottom-6 right-6 w-14 h-14 bg-emerald-600 text-white rounded-full shadow-lg flex items-center justify-center"><Plus className="w-7 h-7" /></button>
 
+      {/* Add/Edit Product Modal */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm" onClick={() => { setIsModalOpen(false); resetForm() }} />
@@ -265,13 +313,78 @@ function App() {
                   <input type="number" step="0.01" required value={formData.max_retail_price} onChange={(e) => setFormData({ ...formData, max_retail_price: e.target.value })} className="w-full px-3 py-2 border rounded-xl" />
                 </div>
               </div>
+              
+              {/* Category Management Block */}
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Category</label>
-                <select value={formData.category_id} onChange={(e) => setFormData({ ...formData, category_id: e.target.value })} className="w-full px-4 py-2 border rounded-xl bg-white">
-                  <option value="">None</option>
-                  {categories.map((cat) => <option key={cat.id} value={cat.id}>{cat.name}</option>)}
-                </select>
+                {isAddingCategory ? (
+                  <div className="flex gap-2 animate-fadeIn">
+                    <input
+                      type="text"
+                      required
+                      placeholder="New category name"
+                      value={newCategoryName}
+                      onChange={(e) => setNewCategoryName(e.target.value)}
+                      className="flex-1 px-4 py-2 border border-emerald-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-emerald-50/30"
+                      autoFocus
+                    />
+                    <button
+                      type="button"
+                      onClick={handleAddCategory}
+                      className="p-2 bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 transition-colors"
+                      title="Save Category"
+                    >
+                      <Check className="w-5 h-5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setIsAddingCategory(false); setNewCategoryName('') }}
+                      className="p-2 bg-slate-100 text-slate-500 rounded-xl hover:bg-slate-200"
+                      title="Cancel"
+                    >
+                      <X className="w-5 h-5" />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    <div className="flex gap-2">
+                      <div className="relative flex-1">
+                        <select
+                          value={formData.category_id}
+                          onChange={(e) => setFormData({ ...formData, category_id: e.target.value })}
+                          className="w-full px-4 py-2 border rounded-xl bg-white appearance-none pr-10"
+                        >
+                          <option value="">None</option>
+                          {categories.map((cat) => <option key={cat.id} value={cat.id}>{cat.name}</option>)}
+                        </select>
+                        <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setIsAddingCategory(true)}
+                        className="px-3 bg-slate-100 border border-slate-200 text-slate-700 rounded-xl hover:bg-emerald-50 hover:text-emerald-600 hover:border-emerald-200 transition-all flex items-center justify-center"
+                        title="Create New Category"
+                      >
+                        <Plus className="w-5 h-5" />
+                      </button>
+                    </div>
+                    
+                    {/* Delete Current Category Button */}
+                    {formData.category_id && (
+                      <div className="flex justify-end">
+                        <button
+                          type="button"
+                          onClick={handleDeleteCategory}
+                          className="text-xs font-medium text-rose-500 hover:text-rose-700 flex items-center gap-1 p-1 hover:bg-rose-50 rounded transition-colors"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" /> Delete this category from list
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
+
               <div className="flex gap-2 pt-2">
                 <button type="button" onClick={() => { setIsModalOpen(false); resetForm() }} className="flex-1 py-2.5 bg-slate-100 rounded-xl font-medium">Cancel</button>
                 <button type="submit" disabled={isSubmitting} className="flex-1 py-2.5 bg-emerald-600 text-white rounded-xl font-medium">{isSubmitting ? 'Saving...' : 'Save'}</button>
