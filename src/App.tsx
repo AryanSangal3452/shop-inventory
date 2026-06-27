@@ -60,29 +60,24 @@ function App() {
     }
   }, [isLoggedIn, currentUser])
 
-  // Forced File Migrator to make sure local computer items map cleanly to your global profile
-  // Forced File Migrator to make sure local computer items map cleanly to your global profile
+  // Controlled File Migrator to keep your accounts separate
   async function runLocalFileMigration() {
     if (!currentUser) return
     try {
-      // 1. Grab EVERYTHING stored offline in the browser
       const allLocalItems = await offlineDb.products.toArray()
       
-      // 🟢 RECOVERY MODE: Find items with no email, or old emails, to migrate them to your current login
+      // 🟢 Only sync items that belong to THIS user or have NO email assigned yet
       const itemsToPush = allLocalItems.filter(item => 
         !item.user_email || 
-        item.user_email.trim() === "" || 
-        item.user_email !== currentUser // <-- This catches items from your previous setup!
+        item.user_email.trim() === "" ||
+        item.user_email === currentUser
       )
 
       if (itemsToPush.length > 0) {
         for (const item of itemsToPush) {
           const updatedItem = { ...item, user_email: currentUser, synced: 1 }
-          
-          // Save it back locally under your current logged-in account email
           await offlineDb.products.put(updatedItem)
           
-          // Push it up to your Supabase cloud tables under your current account
           await supabase.from('products').upsert({
             name: item.name,
             image_url: item.image_url,
@@ -93,7 +88,6 @@ function App() {
             user_email: currentUser
           })
         }
-        console.log(`Successfully recovered and synced ${itemsToPush.length} items to ${currentUser}!`);
       }
     } catch (err) {
       console.error("Background file migration failed:", err)
@@ -111,7 +105,7 @@ function App() {
 
       if (!error && cloudProducts && cloudProducts.length > 0) {
         for (const item of cloudProducts) {
-          await offlineDb.products.put({ ...item, synced: 1 })
+          await offlineDb.products.put({ ...item, synced: 1, user_email: currentUser })
         }
       }
     } catch (err) {
@@ -119,6 +113,7 @@ function App() {
     }
 
     try {
+      // Strictly fetch only items matching this exact authenticated user email
       const offlineProducts = await offlineDb.products.where('user_email').equals(currentUser).toArray()
       
       if (offlineProducts && offlineProducts.length > 0) {
@@ -153,7 +148,6 @@ function App() {
     if (!email || !password) return
 
     if (authMode === 'signup') {
-      // Create user inside Supabase's native built-in management system
       const { data, error } = await supabase.auth.signUp({
         email,
         password,
@@ -168,7 +162,6 @@ function App() {
       setAuthMode('login')
       setAuthPassword('')
     } else {
-      // Log in via Supabase's native authentication
       const { data, error } = await supabase.auth.signInWithPassword({
         email,
         password,
