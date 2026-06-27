@@ -35,17 +35,25 @@ function App() {
 
   // Check user session on start
   useEffect(() => {
-    const savedUser = localStorage.getItem('inventory_logged_in_user')
-    if (savedUser) {
-      setIsLoggedIn(true)
-      setCurrentUser(savedUser)
+    const checkSession = async () => {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (session?.user?.email) {
+        setIsLoggedIn(true)
+        setCurrentUser(session.user.email)
+      } else {
+        const savedUser = localStorage.getItem('inventory_logged_in_user')
+        if (savedUser) {
+          setIsLoggedIn(true)
+          setCurrentUser(savedUser)
+        }
+      }
     }
+    checkSession()
   }, [])
 
   // Load user data whenever login user state updates
   useEffect(() => {
     if (isLoggedIn && currentUser) {
-      // Run background migration to make sure any local stray items bind up cleanly
       runLocalFileMigration().then(() => {
         fetchData()
       })
@@ -53,24 +61,39 @@ function App() {
   }, [isLoggedIn, currentUser])
 
   // Forced File Migrator to make sure local computer items map cleanly to your global profile
+  // Forced File Migrator to make sure local computer items map cleanly to your global profile
   async function runLocalFileMigration() {
     if (!currentUser) return
     try {
+      // 1. Grab EVERYTHING stored offline in the browser
       const allLocalItems = await offlineDb.products.toArray()
+      
+      // 🟢 RECOVERY MODE: Find items with no email, or old emails, to migrate them to your current login
       const itemsToPush = allLocalItems.filter(item => 
         !item.user_email || 
         item.user_email.trim() === "" || 
-        item.user_email === currentUser
+        item.user_email !== currentUser // <-- This catches items from your previous setup!
       )
 
       if (itemsToPush.length > 0) {
-        console.log(`Force-syncing ${itemsToPush.length} items to cloud account: ${currentUser}`)
         for (const item of itemsToPush) {
           const updatedItem = { ...item, user_email: currentUser, synced: 1 }
+          
+          // Save it back locally under your current logged-in account email
           await offlineDb.products.put(updatedItem)
-          await supabase.from('products').upsert(updatedItem)
+          
+          // Push it up to your Supabase cloud tables under your current account
+          await supabase.from('products').upsert({
+            name: item.name,
+            image_url: item.image_url,
+            cost_price: item.cost_price,
+            selling_price: item.selling_price,
+            max_retail_price: item.max_retail_price,
+            category_id: item.category_id,
+            user_email: currentUser
+          })
         }
-        console.log(`Sync complete! Forced ${itemsToPush.length} items to cloud.`);
+        console.log(`Successfully recovered and synced ${itemsToPush.length} items to ${currentUser}!`);
       }
     } catch (err) {
       console.error("Background file migration failed:", err)
@@ -80,7 +103,6 @@ function App() {
   async function fetchData() {
     if (!currentUser) return;
 
-    // 1. 🟢 FETCH LIVE DATA FROM THE CLOUD (Supabase)
     try {
       const { data: cloudProducts, error } = await supabase
         .from('products')
@@ -88,22 +110,19 @@ function App() {
         .eq('user_email', currentUser)
 
       if (!error && cloudProducts && cloudProducts.length > 0) {
-        // Save cloud items directly into this device's offline file database
         for (const item of cloudProducts) {
           await offlineDb.products.put({ ...item, synced: 1 })
         }
       }
     } catch (err) {
-      console.log("Device is offline, loading from local cache instead.")
+      console.log("App running offline. Loading stored cache data.")
     }
 
-    // 2. 🟢 RENDER EVERYTHING FROM LOCAL STORAGE
     try {
       const offlineProducts = await offlineDb.products.where('user_email').equals(currentUser).toArray()
       
       if (offlineProducts && offlineProducts.length > 0) {
         setProducts(offlineProducts as any)
-        localStorage.setItem(`local_products_backup_${currentUser}`, JSON.stringify(offlineProducts))
       } else {
         const backupProducts = localStorage.getItem(`local_products_backup_${currentUser}`)
         if (backupProducts) {
@@ -125,7 +144,7 @@ function App() {
     }
   }
 
-  // === SECURITY AUTH SYSTEM (CLOUD SYNCED FOR MULTI-DEVICE SUPPORT) ===
+  // === NATIVE SECURE SUPABASE AUTH SYSTEM ===
   async function handleAuthSubmit(e: React.FormEvent) {
     e.preventDefault()
     const email = authEmail.trim().toLowerCase()
@@ -134,58 +153,44 @@ function App() {
     if (!email || !password) return
 
     if (authMode === 'signup') {
-      try {
-        // 1. Verify if the account already exists globally on Supabase
-        const { data: existingUser } = await supabase
-          .from('inventory_users')
-          .select('email')
-          .eq('email', email)
-          .maybeSingle()
+      // Create user inside Supabase's native built-in management system
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+      })
 
-        if (existingUser) {
-          alert('This email profile is already registered!')
-          return
-        }
-
-        // 2. Save account directly into the cloud database table
-        const { error } = await supabase
-          .from('inventory_users')
-          .insert([{ email, password }])
-
-        if (error) throw error
-
-        alert('Account configured globally! You can now log in from any device.')
-        setAuthMode('login')
-        setAuthPassword('')
-      } catch (err) {
-        alert('Failed to register global account. Check internet connection!')
+      if (error) {
+        alert(`Signup Failed: ${error.message}`)
+        return
       }
-    } else {
-      try {
-        // 3. Match credentials globally via Supabase lookup table
-        const { data: userRecord } = await supabase
-          .from('inventory_users')
-          .select('password')
-          .eq('email', email)
-          .maybeSingle()
 
-        if (userRecord && userRecord.password === password) {
-          // Stash session context flag in browser memory
-          localStorage.setItem('inventory_logged_in_user', email)
-          setCurrentUser(email)
-          setIsLoggedIn(true)
-          setAuthEmail('')
-          setAuthPassword('')
-        } else {
-          alert('Incorrect Gmail or Password. Try again!')
-        }
-      } catch (err) {
-        alert('User profile sync failed. Check network connection!')
+      alert('Account configured globally! You can now log in.')
+      setAuthMode('login')
+      setAuthPassword('')
+    } else {
+      // Log in via Supabase's native authentication
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      })
+
+      if (error) {
+        alert(`Login Failed: ${error.message}`)
+        return
+      }
+
+      if (data?.user?.email) {
+        localStorage.setItem('inventory_logged_in_user', data.user.email)
+        setCurrentUser(data.user.email)
+        setIsLoggedIn(true)
+        setAuthEmail('')
+        setAuthPassword('')
       }
     }
   }
 
-  function handleLogout() {
+  async function handleLogout() {
+    await supabase.auth.signOut()
     localStorage.removeItem('inventory_logged_in_user')
     setIsLoggedIn(false)
     setCurrentUser('')
