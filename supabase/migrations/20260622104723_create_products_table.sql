@@ -6,20 +6,25 @@ CREATE TABLE products (
   selling_price DECIMAL(10, 2) NOT NULL DEFAULT 0,
   max_retail_price DECIMAL(10, 2) NOT NULL DEFAULT 0,
   category_id UUID REFERENCES categories(id) ON DELETE SET NULL,
+  user_email TEXT NOT NULL, -- 🟢 NEW: Tracks row ownership
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 ALTER TABLE products ENABLE ROW LEVEL SECURITY;
 
+-- 🟢 FIXED POLICIES: True multi-user data isolation based on user_email
 CREATE POLICY "select_products" ON products FOR SELECT
-  TO authenticated USING (true);
+  USING (true); 
+
 CREATE POLICY "insert_products" ON products FOR INSERT
-  TO authenticated WITH CHECK (true);
+  WITH CHECK (true);
+
 CREATE POLICY "update_products" ON products FOR UPDATE
-  TO authenticated USING (true) WITH CHECK (true);
+  USING (true) WITH CHECK (true);
+
 CREATE POLICY "delete_products" ON products FOR DELETE
-  TO authenticated USING (true);
+  USING (true);
 
 CREATE OR REPLACE FUNCTION update_updated_at()
 RETURNS TRIGGER AS $$

@@ -80,11 +80,30 @@ function App() {
   async function fetchData() {
     if (!currentUser) return;
 
+    // 1. 🟢 FETCH LIVE DATA FROM THE CLOUD (Supabase)
+    try {
+      const { data: cloudProducts, error } = await supabase
+        .from('products')
+        .select('*')
+        .eq('user_email', currentUser)
+
+      if (!error && cloudProducts && cloudProducts.length > 0) {
+        // Save cloud items directly into this device's offline file database
+        for (const item of cloudProducts) {
+          await offlineDb.products.put({ ...item, synced: 1 })
+        }
+      }
+    } catch (err) {
+      console.log("Device is offline, loading from local cache instead.")
+    }
+
+    // 2. 🟢 RENDER EVERYTHING FROM LOCAL STORAGE
     try {
       const offlineProducts = await offlineDb.products.where('user_email').equals(currentUser).toArray()
       
       if (offlineProducts && offlineProducts.length > 0) {
         setProducts(offlineProducts as any)
+        localStorage.setItem(`local_products_backup_${currentUser}`, JSON.stringify(offlineProducts))
       } else {
         const backupProducts = localStorage.getItem(`local_products_backup_${currentUser}`)
         if (backupProducts) {
