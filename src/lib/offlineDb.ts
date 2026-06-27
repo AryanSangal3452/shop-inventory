@@ -7,8 +7,9 @@ export interface OfflineProduct {
   cost_price: number;
   selling_price: number;
   max_retail_price: number;
-  category_id: number | null;
-  synced: number; // 0 = modified/created offline, 1 = synced with cloud
+  category_id: string | null;
+  user_email?: string | null; 
+  synced: number; 
 }
 
 class InventoryOfflineDatabase extends Dexie {
@@ -16,8 +17,8 @@ class InventoryOfflineDatabase extends Dexie {
 
   constructor() {
     super('InventoryOfflineDb');
-    this.version(1).stores({
-      products: '++id, name, category_id, synced'
+    this.version(2).stores({
+      products: '++id, name, category_id, user_email, synced' 
     });
   }
 }

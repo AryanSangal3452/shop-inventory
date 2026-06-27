@@ -19,6 +19,7 @@ export interface Product {
   selling_price: number
   max_retail_price: number
   category_id: string | null
+  user_email?: string | null // 🟢 ADDED: Tracking field for user accounts
   created_at: string
   updated_at: string
   categories?: Category

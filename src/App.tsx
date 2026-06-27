@@ -1,16 +1,28 @@
 import { useState, useEffect } from 'react'
-import { Search, Plus, X, Package, ChevronDown, ImageIcon, Trash2, Edit2, Check } from 'lucide-react'
+import { Search, Plus, X, Package, ChevronDown, ImageIcon, Trash2, Edit2, Check, LogOut, Lock, Mail, UserPlus, LogIn } from 'lucide-react'
 import { supabase, type Product, type Category } from './lib/supabase'
 import { offlineDb } from './lib/offlineDb'
 
+interface UserProduct extends Product {
+  user_email?: string;
+}
+
 function App() {
-  const [products, setProducts] = useState<Product[]>([])
+  // === PERSISTENT AUTH STATES ===
+  const [isLoggedIn, setIsLoggedIn] = useState(false)
+  const [currentUser, setCurrentUser] = useState('')
+  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login')
+  const [authEmail, setAuthEmail] = useState('')
+  const [authPassword, setAuthPassword] = useState('')
+
+  // === INVENTORY APP STATES ===
+  const [products, setProducts] = useState<UserProduct[]>([])
   const [categories, setCategories] = useState<Category[]>([])
   const [searchQuery, setSearchQuery] = useState('')
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [isAddingCategory, setIsAddingCategory] = useState(false)
   const [newCategoryName, setNewCategoryName] = useState('')
-  const [editingProduct, setEditingProduct] = useState<Product | null>(null)
+  const [editingProduct, setEditingProduct] = useState<UserProduct | null>(null)
   const [formData, setFormData] = useState({
     name: '',
     image_url: '',
@@ -21,72 +33,120 @@ function App() {
   })
   const [isSubmitting, setIsSubmitting] = useState(false)
 
-  // Initial Data Load
+  // Check user session on start
   useEffect(() => {
-    fetchData()
+    const savedUser = localStorage.getItem('inventory_logged_in_user')
+    if (savedUser) {
+      setIsLoggedIn(true)
+      setCurrentUser(savedUser)
+    }
   }, [])
 
-  // Auto-Sync Network Listener
+  // Load user data whenever login user state updates
   useEffect(() => {
-    async function syncOfflineData() {
-      if (!navigator.onLine) return
-
-      try {
-        const unsynced = await offlineDb.products.where('synced').equals(0).toArray()
-
-        for (const item of unsynced) {
-          const { id, synced, ...cleanData } = item
-          let error, data
-
-          if (typeof id === 'string' && id.startsWith('local_')) {
-            const res = await supabase.from('products').insert(cleanData).select().single()
-            error = res.error
-            data = res.data
-          } else {
-            const res = await supabase.from('products').update(cleanData).eq('id', id).select().single()
-            error = res.error
-            data = res.data
-          }
-
-          if (!error && data) {
-            await offlineDb.products.delete(item.id!)
-            await offlineDb.products.put({ ...data, synced: 1 })
-          }
-        }
-        if (unsynced.length > 0) fetchData()
-      } catch (syncError) {
-        console.error('Background sync failed:', syncError)
-      }
+    if (isLoggedIn && currentUser) {
+      // 🟢 SILENT BACKEND DATA MIGRATION
+      runLocalFileMigration().then(() => {
+        fetchData()
+      })
     }
+  }, [isLoggedIn, currentUser])
 
-    window.addEventListener('online', syncOfflineData)
-    return () => window.removeEventListener('online', syncOfflineData)
-  }, [])
+  // 🟢 ONE-TIME SILENT MIGRATOR (Keeps data tagged under local account file & backs up to Cloud)
+  async function runLocalFileMigration() {
+    if (!currentUser) return
+    try {
+      // 1. Scan your local computer's file storage registry
+      const allLocalItems = await offlineDb.products.toArray()
+      
+      // 2. Extract things created before registering/logging into profiles
+      const orphanItems = allLocalItems.filter(item => !item.user_email || item.user_email.trim() === "")
 
-  async function fetchData() {
-    if (navigator.onLine) {
-      try {
-        const [productsRes, categoriesRes] = await Promise.all([
-          supabase.from('products').select('*, categories(*)').order('created_at', { ascending: false }),
-          supabase.from('categories').select('*').order('name')
-        ])
-
-        if (productsRes.data) {
-          setProducts(productsRes.data)
-          await offlineDb.products.clear()
-          await offlineDb.products.bulkAdd(productsRes.data.map(p => ({ ...p, synced: 1 })))
+      if (orphanItems.length > 0) {
+        console.log(`Mapping ${orphanItems.length} old local products to account: ${currentUser}`)
+        
+        for (const item of orphanItems) {
+          const updatedItem = { ...item, user_email: currentUser, synced: 1 }
+          
+          // Secure it permanently inside your local profile workspace 
+          await offlineDb.products.put(updatedItem)
+          
+          // Safely upload and back it up to your live production cloud mirror
+          await supabase.from('products').upsert(updatedItem)
         }
-        if (categoriesRes.data) setCategories(categoriesRes.data)
-        return
-      } catch (e) {
-        console.log('Using browser offline storage backup.')
+        alert(`Successfully assigned ${orphanItems.length} legacy items to your account and saved securely!`)
       }
+    } catch (err) {
+      console.error("Background file migration failed:", err)
     }
-
-    const offlineProducts = await offlineDb.products.toArray()
-    setProducts(offlineProducts as any)
   }
 
+  async function fetchData() {
+    if (!currentUser) return;
+
+    try {
+      const offlineProducts = await offlineDb.products.where('user_email').equals(currentUser).toArray()
+      
+      if (offlineProducts && offlineProducts.length > 0) {
+        setProducts(offlineProducts as any)
+      } else {
+        const backupProducts = localStorage.getItem(`local_products_backup_${currentUser}`)
+        if (backupProducts) {
+          setProducts(JSON.parse(backupProducts))
+        } else {
+          setProducts([])
+        }
+      }
+    } catch (err) {
+      const backupProducts = localStorage.getItem(`local_products_backup_${currentUser}`)
+      if (backupProducts) setProducts(JSON.parse(backupProducts))
+    }
+
+    const savedCats = localStorage.getItem(`local_categories_${currentUser}`)
+    if (savedCats) {
+      setCategories(JSON.parse(savedCats))
+    } else {
+      setCategories([])
+    }
+  }
+
+  // === SECURITY AUTH SYSTEM ===
+  function handleAuthSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    const email = authEmail.trim().toLowerCase()
+    const password = authPassword
+
+    if (!email || !password) return
+
+    if (authMode === 'signup') {
+      localStorage.setItem(`user_creds_${email}`, password)
+      alert('Local Account configured! You can now log in.')
+      setAuthMode('login')
+      setAuthPassword('')
+    } else {
+      const storedPassword = localStorage.getItem(`user_creds_${email}`)
+      
+      if (storedPassword && storedPassword === password) {
+        localStorage.setItem('inventory_logged_in_user', email)
+        setCurrentUser(email)
+        setIsLoggedIn(true)
+        setAuthEmail('')
+        setAuthPassword('')
+      } else {
+        alert('Incorrect Gmail or Password. Try again!')
+      }
+    }
+  }
+
+  function handleLogout() {
+    localStorage.removeItem('inventory_logged_in_user')
+    setIsLoggedIn(false)
+    setCurrentUser('')
+    setProducts([])
+    setCategories([])
+  }
+
+  // === DATA ACTIONS ===
   const filteredProducts = products.filter(product => {
     if (!searchQuery) return true
     const query = searchQuery.toLowerCase()
@@ -99,16 +159,18 @@ function App() {
 
     try {
       await offlineDb.products.delete(id)
-      if (navigator.onLine) {
-        await supabase.from('products').delete().eq('id', id)
-      }
-      setProducts(products.filter(p => p.id !== id))
+      const updatedProducts = products.filter(p => p.id !== id)
+      setProducts(updatedProducts)
+      localStorage.setItem(`local_products_backup_${currentUser}`, JSON.stringify(updatedProducts))
+      
+      // Also request remote deletion to keep database mirrors clean
+      await supabase.from('products').delete().eq('id', id)
     } catch (err) {
       alert('Failed to delete item.')
     }
   }
 
-  function startEditing(product: Product) {
+  function startEditing(product: UserProduct) {
     setEditingProduct(product)
     setFormData({
       name: product.name,
@@ -121,65 +183,41 @@ function App() {
     setIsModalOpen(true)
   }
 
-  async function handleAddCategory() {
+  function handleAddCategory() {
     if (!newCategoryName.trim()) return
-    try {
-      const { data, error } = await supabase
-        .from('categories')
-        .insert({ name: newCategoryName.trim() })
-        .select()
-        .single()
-        
-      if (!error && data) {
-        setCategories([...categories, data].sort((a, b) => a.name.localeCompare(b.name)))
-        setFormData({ ...formData, category_id: String(data.id) })
-        setNewCategoryName('')
-        setIsAddingCategory(false)
-      } else if (error) {
-        throw error
-      }
-    } catch (err: any) {
-      alert('Failed to create category: ' + err.message)
+    
+    const newCat: Category = {
+      id: 'cat_' + Date.now() as any,
+      name: newCategoryName.trim(),
+      created_at: new Date().toISOString()
     }
+
+    const updatedCats = [...categories, newCat].sort((a, b) => a.name.localeCompare(b.name))
+    setCategories(updatedCats)
+    localStorage.setItem(`local_categories_${currentUser}`, JSON.stringify(updatedCats))
+    
+    setFormData({ ...formData, category_id: String(newCat.id) })
+    setNewCategoryName('')
+    setIsAddingCategory(false)
   }
 
-  // New Delete Category function
-  async function handleDeleteCategory() {
+  function handleDeleteCategory() {
     if (!formData.category_id) return
-    
     const selectedCat = categories.find(c => String(c.id) === formData.category_id)
     if (!selectedCat) return
 
-    const confirmDelete = window.confirm(`Are you sure you want to delete the category "${selectedCat.name}"?\nProducts assigned to this category will become unassigned.`)
+    const confirmDelete = window.confirm(`Are you sure you want to delete "${selectedCat.name}"?`)
     if (!confirmDelete) return
 
-    try {
-      if (navigator.onLine) {
-        const { error } = await supabase
-          .from('categories')
-          .delete()
-          .eq('id', selectedCat.id)
-
-        if (error) throw error
-      } else {
-        alert("You must be online to delete categories from the cloud database.")
-        return
-      }
-
-      // Remove from state array and clear form selection field
-      setCategories(categories.filter(c => String(c.id) !== formData.category_id))
-      setFormData({ ...formData, category_id: '' })
-      
-      // Refresh list to show updated structures immediately
-      fetchData()
-    } catch (err: any) {
-      alert('Failed to delete category: ' + err.message)
-    }
+    const updatedCats = categories.filter(c => String(c.id) !== formData.category_id)
+    setCategories(updatedCats)
+    localStorage.setItem(`local_categories_${currentUser}`, JSON.stringify(updatedCats))
+    setFormData({ ...formData, category_id: '' })
   }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!formData.name.trim()) return
+    if (!formData.name.trim() || !currentUser) return
     setIsSubmitting(true)
 
     const productData = {
@@ -188,37 +226,32 @@ function App() {
       cost_price: parseFloat(formData.cost_price) || 0,
       selling_price: parseFloat(formData.selling_price) || 0,
       max_retail_price: parseFloat(formData.max_retail_price) || 0,
-      category_id: formData.category_id ? parseInt(formData.category_id) : null
+      category_id: formData.category_id ? formData.category_id : null,
+      user_email: currentUser
     }
 
+    let nextProductsList = [...products]
+
     if (editingProduct) {
-      if (navigator.onLine) {
-        const { data } = await supabase.from('products').update(productData).eq('id', editingProduct.id).select('*, categories(*)').single()
-        if (data) {
-          setProducts(products.map(p => p.id === editingProduct.id ? data : p))
-          await offlineDb.products.put({ ...data, synced: 1 })
-        }
-      } else {
-        const offlineProduct = { ...productData, id: editingProduct.id, synced: 0 }
-        await offlineDb.products.put(offlineProduct)
-        setProducts(products.map(p => p.id === editingProduct.id ? (offlineProduct as any) : p))
-        alert('Updated locally! Changes sync when online.')
-      }
+      const offlineProduct = { ...productData, id: editingProduct.id, synced: 0 }
+      await offlineDb.products.put(offlineProduct)
+      
+      const currentCatObj = categories.find(c => String(c.id) === formData.category_id)
+      const mappedUIProduct = { ...offlineProduct, categories: currentCatObj || null }
+      nextProductsList = products.map(p => p.id === editingProduct.id ? (mappedUIProduct as any) : p)
     } else {
-      if (navigator.onLine) {
-        const { data } = await supabase.from('products').insert(productData).select('*, categories(*)').single()
-        if (data) {
-          setProducts([data, ...products])
-          await offlineDb.products.add({ ...data, synced: 1 })
-        }
-      } else {
-        const localId = 'local_' + Date.now()
-        const offlineProduct = { ...productData, id: localId, synced: 0 }
-        await offlineDb.products.add(offlineProduct)
-        setProducts([offlineProduct as any, ...products])
-        alert('Saved locally!')
-      }
+      const localId = 'local_' + Date.now()
+      const offlineProduct = { ...productData, id: localId, synced: 0 }
+      await offlineDb.products.add(offlineProduct)
+      
+      const currentCatObj = categories.find(c => String(c.id) === formData.category_id)
+      const mappedUIProduct = { ...offlineProduct, categories: currentCatObj || null }
+      nextProductsList = [mappedUIProduct as any, ...products]
     }
+    
+    setProducts(nextProductsList)
+    localStorage.setItem(`local_products_backup_${currentUser}`, JSON.stringify(nextProductsList))
+
     resetForm()
     setIsModalOpen(false)
     setIsSubmitting(false)
@@ -231,28 +264,112 @@ function App() {
     setEditingProduct(null)
   }
 
+  if (!isLoggedIn) {
+    return (
+      <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
+        <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md border border-slate-200">
+          <div className="text-center mb-8">
+            <div className="w-16 h-16 bg-emerald-50 text-emerald-600 rounded-2xl mx-auto flex items-center justify-center mb-3 border border-emerald-100">
+              <Package className="w-9 h-9" />
+            </div>
+            <h1 className="text-2xl font-bold text-slate-800">Local Gateway</h1>
+            <p className="text-sm text-slate-500 mt-1">
+              Log in to manage items.
+            </p>
+          </div>
+
+          <form onSubmit={handleAuthSubmit} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">Gmail ID / Email</label>
+              <div className="relative">
+                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                <input
+                  type="email"
+                  required
+                  placeholder="shopowner@gmail.com"
+                  value={authEmail}
+                  onChange={(e) => setAuthEmail(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 text-slate-700 bg-white"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">Password</label>
+              <div className="relative">
+                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                <input
+                  type="password"
+                  required
+                  placeholder="••••••••"
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 text-slate-700 bg-white"
+                />
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-semibold shadow transition-all flex items-center justify-center gap-2 mt-2"
+            >
+              {authMode === 'login' ? (
+                <><LogIn className="w-4 h-4" /> Log In</>
+              ) : (
+                <><UserPlus className="w-4 h-4" /> Sign Up</>
+              )}
+            </button>
+          </form>
+
+          <div className="mt-6 text-center border-t border-slate-100 pt-4">
+            <button
+              type="button"
+              onClick={() => { setAuthMode(authMode === 'login' ? 'signup' : 'login'); setAuthPassword('') }}
+              className="text-sm font-medium text-emerald-600 hover:text-emerald-700 transition-colors"
+            >
+              {authMode === 'login' ? "Don't have an account? Create one" : 'Already configured? Log In'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="min-h-screen bg-slate-50">
-      {/* Sticky Header */}
       <header className="sticky top-0 z-10 bg-white border-b border-slate-200 shadow-sm">
         <div className="max-w-7xl mx-auto px-4 py-4">
           <div className="flex items-center justify-between mb-4">
-            <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
-              <Package className="w-7 h-7 text-emerald-600" /> Inventory Manager
-            </h1>
-            <span className="text-sm text-slate-500">{filteredProducts.length} products</span>
+            <div>
+              <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+                <Package className="w-7 h-7 text-emerald-600" /> Inventory Manager
+              </h1>
+              <p className="text-[11px] text-slate-400 mt-0.5 truncate max-w-[200px]">Logged in: {currentUser}</p>
+            </div>
+            
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="px-3 py-1.5 border border-slate-200 text-slate-600 hover:bg-rose-50 hover:text-rose-600 hover:border-rose-200 rounded-xl transition-all font-medium text-sm flex items-center gap-2"
+            >
+              <LogOut className="w-4 h-4" /> Logout
+            </button>
           </div>
-          <input
-            type="text"
-            placeholder="Search products..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-4 pr-4 py-3 border border-slate-200 rounded-xl bg-slate-50 text-slate-700"
-          />
+          <div className="flex items-center gap-4">
+            <input
+              type="text"
+              placeholder="Search products..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full pl-4 pr-4 py-3 border border-slate-200 rounded-xl bg-slate-50 text-slate-700"
+            />
+            <span className="text-sm font-semibold text-slate-500 bg-slate-100 px-3 py-3 rounded-xl whitespace-nowrap">
+              {filteredProducts.length} items
+            </span>
+          </div>
         </div>
       </header>
 
-      {/* Product List */}
       <main className="max-w-4xl mx-auto px-4 py-6 pb-24">
         <div className="space-y-2">
           {filteredProducts.map((product) => (
@@ -264,7 +381,6 @@ function App() {
                 <div className="flex items-center gap-2 mb-0.5">
                   <h3 className="font-semibold text-slate-800 text-sm truncate">{product.name}</h3>
                   {product.categories && <span className="bg-emerald-50 text-emerald-700 text-[10px] px-2 py-0.5 rounded-full">{product.categories.name}</span>}
-                  {('synced' in product) && product.synced === 0 && <span className="bg-amber-50 text-amber-700 text-[9px] px-1.5 py-0.5 rounded border border-amber-200 animate-pulse">Offline Changes</span>}
                 </div>
                 <div className="flex items-center gap-4 text-xs">
                   <div>CP: <span className="font-semibold text-rose-500">₹{product.cost_price.toFixed(2)}</span></div>
@@ -281,7 +397,6 @@ function App() {
         </div>
       </main>
 
-      {/* Floating Action Button */}
       <button onClick={() => setIsModalOpen(true)} className="fixed bottom-6 right-6 w-14 h-14 bg-emerald-600 text-white rounded-full shadow-lg flex items-center justify-center"><Plus className="w-7 h-7" /></button>
 
       {/* Add/Edit Product Modal */}
@@ -314,7 +429,6 @@ function App() {
                 </div>
               </div>
               
-              {/* Category Management Block */}
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Category</label>
                 {isAddingCategory ? (
@@ -328,20 +442,10 @@ function App() {
                       className="flex-1 px-4 py-2 border border-emerald-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-emerald-50/30"
                       autoFocus
                     />
-                    <button
-                      type="button"
-                      onClick={handleAddCategory}
-                      className="p-2 bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 transition-colors"
-                      title="Save Category"
-                    >
+                    <button type="button" onClick={handleAddCategory} className="p-2 bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 transition-colors">
                       <Check className="w-5 h-5" />
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => { setIsAddingCategory(false); setNewCategoryName('') }}
-                      className="p-2 bg-slate-100 text-slate-500 rounded-xl hover:bg-slate-200"
-                      title="Cancel"
-                    >
+                    <button type="button" onClick={() => { setIsAddingCategory(false); setNewCategoryName('') }} className="p-2 bg-slate-100 text-slate-500 rounded-xl hover:bg-slate-200">
                       <X className="w-5 h-5" />
                     </button>
                   </div>
@@ -359,24 +463,14 @@ function App() {
                         </select>
                         <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => setIsAddingCategory(true)}
-                        className="px-3 bg-slate-100 border border-slate-200 text-slate-700 rounded-xl hover:bg-emerald-50 hover:text-emerald-600 hover:border-emerald-200 transition-all flex items-center justify-center"
-                        title="Create New Category"
-                      >
+                      <button type="button" onClick={() => setIsAddingCategory(true)} className="px-3 bg-slate-100 border border-slate-200 text-slate-700 rounded-xl hover:bg-emerald-50 hover:text-emerald-600 hover:border-emerald-200 transition-all flex items-center justify-center">
                         <Plus className="w-5 h-5" />
                       </button>
                     </div>
                     
-                    {/* Delete Current Category Button */}
                     {formData.category_id && (
                       <div className="flex justify-end">
-                        <button
-                          type="button"
-                          onClick={handleDeleteCategory}
-                          className="text-xs font-medium text-rose-500 hover:text-rose-700 flex items-center gap-1 p-1 hover:bg-rose-50 rounded transition-colors"
-                        >
+                        <button type="button" onClick={handleDeleteCategory} className="text-xs font-medium text-rose-500 hover:text-rose-700 flex items-center gap-1 p-1 hover:bg-rose-50 rounded transition-colors">
                           <Trash2 className="w-3.5 h-3.5" /> Delete this category from list
                         </button>
                       </div>
