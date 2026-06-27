@@ -60,13 +60,42 @@ function App() {
     }
   }, [isLoggedIn, currentUser])
 
+  // 🟢 PURE-CODE DEVICE REALTIME STREAM SYNCHRONIZER
+  // Listens globally for database events and forces instantaneous local state redraws
+  useEffect(() => {
+    if (!isLoggedIn || !currentUser) return
+
+    const productsChannel = supabase
+      .channel('table-db-changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*', // Intercept Inserts, Updates, and Deletes instantly
+          schema: 'public',
+          table: 'products'
+        },
+        (payload) => {
+          console.log('Realtime push intercepted via code:', payload)
+          
+          // Re-sync database records dynamically across your devices
+          fetchData()
+        }
+      )
+      .subscribe((status) => {
+        console.log("Realtime stream connection status:", status)
+      })
+
+    return () => {
+      supabase.removeChannel(productsChannel)
+    }
+  }, [isLoggedIn, currentUser])
+
   // Controlled File Migrator to keep your accounts separate
   async function runLocalFileMigration() {
     if (!currentUser) return
     try {
       const allLocalItems = await offlineDb.products.toArray()
       
-      // 🟢 Only sync items that belong to THIS user or have NO email assigned yet
       const itemsToPush = allLocalItems.filter(item => 
         !item.user_email || 
         item.user_email.trim() === "" ||
@@ -103,7 +132,10 @@ function App() {
         .select('*')
         .eq('user_email', currentUser)
 
-      if (!error && cloudProducts && cloudProducts.length > 0) {
+      if (!error && cloudProducts) {
+        // Clear old local cached representation to guarantee no mixed item views
+        await offlineDb.products.where('user_email').equals(currentUser).delete()
+        
         for (const item of cloudProducts) {
           await offlineDb.products.put({ ...item, synced: 1, user_email: currentUser })
         }
@@ -113,18 +145,11 @@ function App() {
     }
 
     try {
-      // Strictly fetch only items matching this exact authenticated user email
       const offlineProducts = await offlineDb.products.where('user_email').equals(currentUser).toArray()
       
-      if (offlineProducts && offlineProducts.length > 0) {
+      if (offlineProducts) {
         setProducts(offlineProducts as any)
-      } else {
-        const backupProducts = localStorage.getItem(`local_products_backup_${currentUser}`)
-        if (backupProducts) {
-          setProducts(JSON.parse(backupProducts))
-        } else {
-          setProducts([])
-        }
+        localStorage.setItem(`local_products_backup_${currentUser}`, JSON.stringify(offlineProducts))
       }
     } catch (err) {
       const backupProducts = localStorage.getItem(`local_products_backup_${currentUser}`)
@@ -148,30 +173,14 @@ function App() {
     if (!email || !password) return
 
     if (authMode === 'signup') {
-      const { data, error } = await supabase.auth.signUp({
-        email,
-        password,
-      })
-
-      if (error) {
-        alert(`Signup Failed: ${error.message}`)
-        return
-      }
-
+      const { error } = await supabase.auth.signUp({ email, password })
+      if (error) { alert(`Signup Failed: ${error.message}`); return }
       alert('Account configured globally! You can now log in.')
       setAuthMode('login')
       setAuthPassword('')
     } else {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      })
-
-      if (error) {
-        alert(`Login Failed: ${error.message}`)
-        return
-      }
-
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password })
+      if (error) { alert(`Login Failed: ${error.message}`); return }
       if (data?.user?.email) {
         localStorage.setItem('inventory_logged_in_user', data.user.email)
         setCurrentUser(data.user.email)
@@ -191,7 +200,7 @@ function App() {
     setCategories([])
   }
 
-  // === DATA ACTIONS ===
+  // === DATA ACTIONS WITH EXPLICIT STATE REDRAW ===
   const filteredProducts = products.filter(product => {
     if (!searchQuery) return true
     const query = searchQuery.toLowerCase()
@@ -204,11 +213,8 @@ function App() {
 
     try {
       await offlineDb.products.delete(id)
-      const updatedProducts = products.filter(p => p.id !== id)
-      setProducts(updatedProducts)
-      localStorage.setItem(`local_products_backup_${currentUser}`, JSON.stringify(updatedProducts))
-      
       await supabase.from('products').delete().eq('id', id)
+      await fetchData() // Force code sync state update
     } catch (err) {
       alert('Failed to delete item.')
     }
@@ -229,17 +235,14 @@ function App() {
 
   function handleAddCategory() {
     if (!newCategoryName.trim()) return
-    
     const newCat: Category = {
       id: 'cat_' + Date.now() as any,
       name: newCategoryName.trim(),
       created_at: new Date().toISOString()
     }
-
     const updatedCats = [...categories, newCat].sort((a, b) => a.name.localeCompare(b.name))
     setCategories(updatedCats)
     localStorage.setItem(`local_categories_${currentUser}`, JSON.stringify(updatedCats))
-    
     setFormData({ ...formData, category_id: String(newCat.id) })
     setNewCategoryName('')
     setIsAddingCategory(false)
@@ -249,10 +252,8 @@ function App() {
     if (!formData.category_id) return
     const selectedCat = categories.find(c => String(c.id) === formData.category_id)
     if (!selectedCat) return
-
     const confirmDelete = window.confirm(`Are you sure you want to delete "${selectedCat.name}"?`)
     if (!confirmDelete) return
-
     const updatedCats = categories.filter(c => String(c.id) !== formData.category_id)
     setCategories(updatedCats)
     localStorage.setItem(`local_categories_${currentUser}`, JSON.stringify(updatedCats))
@@ -274,30 +275,18 @@ function App() {
       user_email: currentUser
     }
 
-    let nextProductsList = [...products]
-
     if (editingProduct) {
-      const offlineProduct = { ...productData, id: editingProduct.id, synced: 0 }
+      const offlineProduct = { ...productData, id: editingProduct.id, synced: 1 }
       await offlineDb.products.put(offlineProduct)
-      await supabase.from('products').upsert(offlineProduct)
-      
-      const currentCatObj = categories.find(c => String(c.id) === formData.category_id)
-      const mappedUIProduct = { ...offlineProduct, categories: currentCatObj || null }
-      nextProductsList = products.map(p => p.id === editingProduct.id ? (mappedUIProduct as any) : p)
+      await supabase.from('products').upsert({ id: editingProduct.id, ...productData })
     } else {
       const localId = 'local_' + Date.now()
-      const offlineProduct = { ...productData, id: localId, synced: 0 }
+      const offlineProduct = { ...productData, id: localId, synced: 1 }
       await offlineDb.products.add(offlineProduct)
-      await supabase.from('products').insert(offlineProduct)
-      
-      const currentCatObj = categories.find(c => String(c.id) === formData.category_id)
-      const mappedUIProduct = { ...offlineProduct, categories: currentCatObj || null }
-      nextProductsList = [mappedUIProduct as any, ...products]
+      await supabase.from('products').insert(productData)
     }
     
-    setProducts(nextProductsList)
-    localStorage.setItem(`local_products_backup_${currentUser}`, JSON.stringify(nextProductsList))
-
+    await fetchData() // Dynamic rebuild
     resetForm()
     setIsModalOpen(false)
     setIsSubmitting(false)
@@ -319,9 +308,7 @@ function App() {
               <Package className="w-9 h-9" />
             </div>
             <h1 className="text-2xl font-bold text-slate-800">Local Gateway</h1>
-            <p className="text-sm text-slate-500 mt-1">
-              Log in to manage items.
-            </p>
+            <p className="text-sm text-slate-500 mt-1">Log in to manage items.</p>
           </div>
 
           <form onSubmit={handleAuthSubmit} className="space-y-4">
@@ -392,7 +379,6 @@ function App() {
               </h1>
               <p className="text-[11px] text-slate-400 mt-0.5 truncate max-w-[200px]">Logged in: {currentUser}</p>
             </div>
-            
             <button
               type="button"
               onClick={handleLogout}
@@ -513,7 +499,6 @@ function App() {
                         <Plus className="w-5 h-5" />
                       </button>
                     </div>
-                    
                     {formData.category_id && (
                       <div className="flex justify-end">
                         <button type="button" onClick={handleDeleteCategory} className="text-xs font-medium text-rose-500 hover:text-rose-700 flex items-center gap-1 p-1 hover:bg-rose-50 rounded transition-colors">
