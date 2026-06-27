@@ -8,7 +8,7 @@ export interface OfflineProduct {
   selling_price: number;
   max_retail_price: number;
   category_id: string | null;
-  user_email?: string | null; 
+  user_email?: string; // Add field definition here
   synced: number; 
 }
 
@@ -17,8 +17,9 @@ class InventoryOfflineDatabase extends Dexie {
 
   constructor() {
     super('InventoryOfflineDb');
+    // 🟢 ADDED user_email index here so your phone can find your laptop's matching items
     this.version(2).stores({
-      products: '++id, name, category_id, user_email, synced' 
+      products: '++id, name, category_id, user_email, synced'
     });
   }
 }
