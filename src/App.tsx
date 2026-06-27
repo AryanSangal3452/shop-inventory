@@ -45,36 +45,32 @@ function App() {
   // Load user data whenever login user state updates
   useEffect(() => {
     if (isLoggedIn && currentUser) {
-      // 🟢 SILENT BACKEND DATA MIGRATION
+      // Run background migration to make sure any local stray items bind up cleanly
       runLocalFileMigration().then(() => {
         fetchData()
       })
     }
   }, [isLoggedIn, currentUser])
 
-  // 🟢 ONE-TIME SILENT MIGRATOR (Keeps data tagged under local account file & backs up to Cloud)
+  // Forced File Migrator to make sure local computer items map cleanly to your global profile
   async function runLocalFileMigration() {
     if (!currentUser) return
     try {
-      // 1. Scan your local computer's file storage registry
       const allLocalItems = await offlineDb.products.toArray()
-      
-      // 2. Extract things created before registering/logging into profiles
-      const orphanItems = allLocalItems.filter(item => !item.user_email || item.user_email.trim() === "")
+      const itemsToPush = allLocalItems.filter(item => 
+        !item.user_email || 
+        item.user_email.trim() === "" || 
+        item.user_email === currentUser
+      )
 
-      if (orphanItems.length > 0) {
-        console.log(`Mapping ${orphanItems.length} old local products to account: ${currentUser}`)
-        
-        for (const item of orphanItems) {
+      if (itemsToPush.length > 0) {
+        console.log(`Force-syncing ${itemsToPush.length} items to cloud account: ${currentUser}`)
+        for (const item of itemsToPush) {
           const updatedItem = { ...item, user_email: currentUser, synced: 1 }
-          
-          // Secure it permanently inside your local profile workspace 
           await offlineDb.products.put(updatedItem)
-          
-          // Safely upload and back it up to your live production cloud mirror
           await supabase.from('products').upsert(updatedItem)
         }
-        alert(`Successfully assigned ${orphanItems.length} legacy items to your account and saved securely!`)
+        console.log(`Sync complete! Forced ${itemsToPush.length} items to cloud.`);
       }
     } catch (err) {
       console.error("Background file migration failed:", err)
@@ -110,8 +106,8 @@ function App() {
     }
   }
 
-  // === SECURITY AUTH SYSTEM ===
-  function handleAuthSubmit(e: React.FormEvent) {
+  // === SECURITY AUTH SYSTEM (CLOUD SYNCED FOR MULTI-DEVICE SUPPORT) ===
+  async function handleAuthSubmit(e: React.FormEvent) {
     e.preventDefault()
     const email = authEmail.trim().toLowerCase()
     const password = authPassword
@@ -119,21 +115,53 @@ function App() {
     if (!email || !password) return
 
     if (authMode === 'signup') {
-      localStorage.setItem(`user_creds_${email}`, password)
-      alert('Local Account configured! You can now log in.')
-      setAuthMode('login')
-      setAuthPassword('')
-    } else {
-      const storedPassword = localStorage.getItem(`user_creds_${email}`)
-      
-      if (storedPassword && storedPassword === password) {
-        localStorage.setItem('inventory_logged_in_user', email)
-        setCurrentUser(email)
-        setIsLoggedIn(true)
-        setAuthEmail('')
+      try {
+        // 1. Verify if the account already exists globally on Supabase
+        const { data: existingUser } = await supabase
+          .from('inventory_users')
+          .select('email')
+          .eq('email', email)
+          .maybeSingle()
+
+        if (existingUser) {
+          alert('This email profile is already registered!')
+          return
+        }
+
+        // 2. Save account directly into the cloud database table
+        const { error } = await supabase
+          .from('inventory_users')
+          .insert([{ email, password }])
+
+        if (error) throw error
+
+        alert('Account configured globally! You can now log in from any device.')
+        setAuthMode('login')
         setAuthPassword('')
-      } else {
-        alert('Incorrect Gmail or Password. Try again!')
+      } catch (err) {
+        alert('Failed to register global account. Check internet connection!')
+      }
+    } else {
+      try {
+        // 3. Match credentials globally via Supabase lookup table
+        const { data: userRecord } = await supabase
+          .from('inventory_users')
+          .select('password')
+          .eq('email', email)
+          .maybeSingle()
+
+        if (userRecord && userRecord.password === password) {
+          // Stash session context flag in browser memory
+          localStorage.setItem('inventory_logged_in_user', email)
+          setCurrentUser(email)
+          setIsLoggedIn(true)
+          setAuthEmail('')
+          setAuthPassword('')
+        } else {
+          alert('Incorrect Gmail or Password. Try again!')
+        }
+      } catch (err) {
+        alert('User profile sync failed. Check network connection!')
       }
     }
   }
@@ -163,7 +191,6 @@ function App() {
       setProducts(updatedProducts)
       localStorage.setItem(`local_products_backup_${currentUser}`, JSON.stringify(updatedProducts))
       
-      // Also request remote deletion to keep database mirrors clean
       await supabase.from('products').delete().eq('id', id)
     } catch (err) {
       alert('Failed to delete item.')
@@ -235,6 +262,7 @@ function App() {
     if (editingProduct) {
       const offlineProduct = { ...productData, id: editingProduct.id, synced: 0 }
       await offlineDb.products.put(offlineProduct)
+      await supabase.from('products').upsert(offlineProduct)
       
       const currentCatObj = categories.find(c => String(c.id) === formData.category_id)
       const mappedUIProduct = { ...offlineProduct, categories: currentCatObj || null }
@@ -243,6 +271,7 @@ function App() {
       const localId = 'local_' + Date.now()
       const offlineProduct = { ...productData, id: localId, synced: 0 }
       await offlineDb.products.add(offlineProduct)
+      await supabase.from('products').insert(offlineProduct)
       
       const currentCatObj = categories.find(c => String(c.id) === formData.category_id)
       const mappedUIProduct = { ...offlineProduct, categories: currentCatObj || null }
