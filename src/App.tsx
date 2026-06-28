@@ -33,7 +33,7 @@ function App() {
   })
   const [isSubmitting, setIsSubmitting] = useState(false)
 
-  // Check user session on start
+  // Check user session on application startup
   useEffect(() => {
     const checkSession = async () => {
       const { data: { session } } = await supabase.auth.getSession()
@@ -51,7 +51,7 @@ function App() {
     checkSession()
   }, [])
 
-  // Load user data whenever login user state updates
+  // Force migrations and fetch accurate state tables on user login change
   useEffect(() => {
     if (isLoggedIn && currentUser) {
       runLocalFileMigration().then(() => {
@@ -60,37 +60,39 @@ function App() {
     }
   }, [isLoggedIn, currentUser])
 
-  // 🟢 PURE-CODE DEVICE REALTIME STREAM SYNCHRONIZER
-  // Listens globally for database events and forces instantaneous local state redraws
+  // 🟢 PURE-CODE CLIENT BROADCAST PIPELINE (No Dashboard Needed)
   useEffect(() => {
     if (!isLoggedIn || !currentUser) return
 
-    const productsChannel = supabase
-      .channel('table-db-changes')
+    // Initializing custom dynamic websocket room context
+    const broadcastChannel = supabase
+      .channel('app-client-sync', {
+        config: {
+          broadcast: { 
+            acknowledge: false,
+            self: false // Keeps sender app thread unbounced
+          }
+        }
+      })
       .on(
-        'postgres_changes',
-        {
-          event: '*', // Intercept Inserts, Updates, and Deletes instantly
-          schema: 'public',
-          table: 'products'
-        },
-        (payload) => {
-          console.log('Realtime push intercepted via code:', payload)
-          
-          // Re-sync database records dynamically across your devices
-          fetchData()
+        'broadcast',
+        { event: 'inventory_mutated' },
+        async (payload) => {
+          console.log('Cross-device dynamic mutations intercepted:', payload)
+          // Refetch live items instantly into background view layout
+          await fetchData()
         }
       )
       .subscribe((status) => {
-        console.log("Realtime stream connection status:", status)
+        console.log("Websocket code sync channel state:", status)
       })
 
     return () => {
-      supabase.removeChannel(productsChannel)
+      supabase.removeChannel(broadcastChannel)
     }
   }, [isLoggedIn, currentUser])
 
-  // Controlled File Migrator to keep your accounts separate
+  // Clean storage device-to-device database dynamic data fallback migrator
   async function runLocalFileMigration() {
     if (!currentUser) return
     try {
@@ -104,9 +106,6 @@ function App() {
 
       if (itemsToPush.length > 0) {
         for (const item of itemsToPush) {
-          const updatedItem = { ...item, user_email: currentUser, synced: 1 }
-          await offlineDb.products.put(updatedItem)
-          
           await supabase.from('products').upsert({
             name: item.name,
             image_url: item.image_url,
@@ -116,10 +115,12 @@ function App() {
             category_id: item.category_id,
             user_email: currentUser
           })
+
+          await offlineDb.products.put({ ...item, user_email: currentUser, synced: 1 })
         }
       }
     } catch (err) {
-      console.error("Background file migration failed:", err)
+      console.error("Background migration layer threw an error:", err)
     }
   }
 
@@ -133,7 +134,7 @@ function App() {
         .eq('user_email', currentUser)
 
       if (!error && cloudProducts) {
-        // Clear old local cached representation to guarantee no mixed item views
+        // Drop local stale caches to cleanly mirror cloud source truth states
         await offlineDb.products.where('user_email').equals(currentUser).delete()
         
         for (const item of cloudProducts) {
@@ -141,12 +142,11 @@ function App() {
         }
       }
     } catch (err) {
-      console.log("App running offline. Loading stored cache data.")
+      console.log("Application running offline state. Sourcing local IndexedDB fallback representations.")
     }
 
     try {
       const offlineProducts = await offlineDb.products.where('user_email').equals(currentUser).toArray()
-      
       if (offlineProducts) {
         setProducts(offlineProducts as any)
         localStorage.setItem(`local_products_backup_${currentUser}`, JSON.stringify(offlineProducts))
@@ -164,7 +164,7 @@ function App() {
     }
   }
 
-  // === NATIVE SECURE SUPABASE AUTH SYSTEM ===
+  // === NATIVE AUTH PROCEDURES ===
   async function handleAuthSubmit(e: React.FormEvent) {
     e.preventDefault()
     const email = authEmail.trim().toLowerCase()
@@ -175,7 +175,7 @@ function App() {
     if (authMode === 'signup') {
       const { error } = await supabase.auth.signUp({ email, password })
       if (error) { alert(`Signup Failed: ${error.message}`); return }
-      alert('Account configured globally! You can now log in.')
+      alert('Global credentials stored! Proceeding to entry logs.')
       setAuthMode('login')
       setAuthPassword('')
     } else {
@@ -200,23 +200,84 @@ function App() {
     setCategories([])
   }
 
-  // === DATA ACTIONS WITH EXPLICIT STATE REDRAW ===
+  // === DATA LAYERS AND VIEW FILTERS ===
   const filteredProducts = products.filter(product => {
     if (!searchQuery) return true
     const query = searchQuery.toLowerCase()
     return product.name.toLowerCase().includes(query) || product.name.toLowerCase().startsWith(query)
   })
 
+  // 🟢 MUTATE SUBMIT HANDLER WITH LIVE PUSH BROADCAST TRIGGER
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!formData.name.trim() || !currentUser) return
+    setIsSubmitting(true)
+
+    const productData = {
+      name: formData.name.trim(),
+      image_url: formData.image_url.trim() || null,
+      cost_price: parseFloat(formData.cost_price) || 0,
+      selling_price: parseFloat(formData.selling_price) || 0,
+      max_retail_price: parseFloat(formData.max_retail_price) || 0,
+      category_id: formData.category_id ? formData.category_id : null,
+      user_email: currentUser
+    }
+
+    try {
+      if (editingProduct) {
+        await supabase.from('products').upsert({ id: editingProduct.id, ...productData })
+        await offlineDb.products.put({ ...productData, id: editingProduct.id, synced: 1 })
+      } else {
+        const { data, error } = await supabase.from('products').insert(productData).select().single()
+        if (error) throw error
+        if (data) {
+          await offlineDb.products.add({ ...data, synced: 1 })
+        }
+      }
+      
+      // Update local context
+      await fetchData()
+
+      // 📡 FIRE TRANSMISSION EVENT: Triggers real-time sync across other listening client instances
+      await supabase.channel('app-client-sync').send({
+        type: 'broadcast',
+        event: 'inventory_mutated',
+        payload: { command: 'sync_mutation', targetUser: currentUser }
+      })
+
+      resetForm()
+      setIsModalOpen(false)
+    } catch (err) {
+      console.error("Cloud mutation failed, writing to fallback internal partition memory states:", err)
+      const localId = 'local_' + Date.now()
+      await offlineDb.products.add({ ...productData, id: localId, synced: 0 })
+      await fetchData()
+      setIsModalOpen(false)
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  // 🟢 DELETE MUTATE HANDLER WITH LIVE PUSH BROADCAST TRIGGER
   async function handleDelete(id: string | number, name: string) {
     const confirmDelete = window.confirm(`Are you sure you want to delete "${name}"?`)
     if (!confirmDelete) return
 
     try {
-      await offlineDb.products.delete(id)
       await supabase.from('products').delete().eq('id', id)
-      await fetchData() // Force code sync state update
+      await offlineDb.products.delete(id)
+      
+      // Update local state tables layout representation layer
+      await fetchData()
+
+      // 📡 FIRE TRANSMISSION EVENT: Tells all other logged-in screens to remove the item immediately
+      await supabase.channel('app-client-sync').send({
+        type: 'broadcast',
+        event: 'inventory_mutated',
+        payload: { command: 'sync_deletion', droppedId: id }
+      })
     } catch (err) {
-      alert('Failed to delete item.')
+      alert('Failed to execute item cleanup from data registries.')
     }
   }
 
@@ -258,38 +319,6 @@ function App() {
     setCategories(updatedCats)
     localStorage.setItem(`local_categories_${currentUser}`, JSON.stringify(updatedCats))
     setFormData({ ...formData, category_id: '' })
-  }
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    if (!formData.name.trim() || !currentUser) return
-    setIsSubmitting(true)
-
-    const productData = {
-      name: formData.name.trim(),
-      image_url: formData.image_url.trim() || null,
-      cost_price: parseFloat(formData.cost_price) || 0,
-      selling_price: parseFloat(formData.selling_price) || 0,
-      max_retail_price: parseFloat(formData.max_retail_price) || 0,
-      category_id: formData.category_id ? formData.category_id : null,
-      user_email: currentUser
-    }
-
-    if (editingProduct) {
-      const offlineProduct = { ...productData, id: editingProduct.id, synced: 1 }
-      await offlineDb.products.put(offlineProduct)
-      await supabase.from('products').upsert({ id: editingProduct.id, ...productData })
-    } else {
-      const localId = 'local_' + Date.now()
-      const offlineProduct = { ...productData, id: localId, synced: 1 }
-      await offlineDb.products.add(offlineProduct)
-      await supabase.from('products').insert(productData)
-    }
-    
-    await fetchData() // Dynamic rebuild
-    resetForm()
-    setIsModalOpen(false)
-    setIsSubmitting(false)
   }
 
   function resetForm() {
