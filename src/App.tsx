@@ -110,7 +110,7 @@ function App() {
 
       if (itemsToPush.length > 0) {
         for (const item of itemsToPush) {
-          await supabase.from('products').upsert({
+          await supabase.from('products').from('products').upsert({
             name: item.name,
             image_url: item.image_url,
             cost_price: item.cost_price,
@@ -461,7 +461,7 @@ function App() {
             </div>
           ))}
         </div>
-      </header>
+      </main>
 
       <button onClick={() => setIsModalOpen(true)} className="fixed bottom-6 right-6 w-14 h-14 bg-emerald-600 text-white rounded-full shadow-lg flex items-center justify-center"><Plus className="w-7 h-7" /></button>
 
