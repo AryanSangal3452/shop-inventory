@@ -7,11 +7,11 @@ if (!supabaseUrl || !supabaseAnonKey) {
   console.error("Missing Supabase configuration keys inside environment profiles!")
 }
 
-// 🟢 FIXED CONFIGURATION: RESTORE AUTOMATED LIVE DATABASE COMMUNICATIONS
+// 🟢 FIXED CONFIGURATION: ALL SESSION STREAMS ARE LIVE AND CONNECTED
 export const supabase = createClient(supabaseUrl || '', supabaseAnonKey || '', {
   auth: {
-    persistSession: true,      // Allows browser tabs to cleanly remember you
-    autoRefreshToken: true,    // Renews data tracking tokens flawlessly
+    persistSession: true,      // Safe session tracking across tabs
+    autoRefreshToken: true,    // Flawless token updates
     detectSessionInUrl: true
   }
 })
