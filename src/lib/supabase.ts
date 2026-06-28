@@ -7,18 +7,13 @@ if (!supabaseUrl || !supabaseAnonKey) {
   console.error("Missing Supabase configuration keys inside environment profiles!")
 }
 
-// 🟢 FIX: Keep sessions active and enable real-time WebSocket frames
+// 🟢 FIXED CONFIGURATION: ALLOW AUTOMATIC SESSION STORAGE TRACKING
 export const supabase = createClient(supabaseUrl || '', supabaseAnonKey || '', {
   auth: {
-    persistSession: true,
-    autoRefreshToken: true,
-    detectSessionInUrl: false
-  },
-  realtime: {
-    params: {
-      eventsPerSecond: 10,
-    },
-  },
+    persistSession: true,      // Keeps you logged in safely across refreshes
+    autoRefreshToken: true,    // Renews your access token automatically
+    detectSessionInUrl: true
+  }
 })
 
 export interface Product {
@@ -30,9 +25,6 @@ export interface Product {
   max_retail_price: number;
   category_id: string | null;
   created_at?: string;
-  categories?: {
-    name: string;
-  } | null;
 }
 
 export interface Category {
