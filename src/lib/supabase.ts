@@ -7,13 +7,18 @@ if (!supabaseUrl || !supabaseAnonKey) {
   console.error("Missing Supabase configuration keys inside environment profiles!")
 }
 
-// 🟢 UPGRADED MULTI-DEVICE SESSION ROUTER
+// 🟢 FIX: Keep sessions active and enable real-time WebSocket frames
 export const supabase = createClient(supabaseUrl || '', supabaseAnonKey || '', {
   auth: {
-    persistSession: false,
-    autoRefreshToken: false,
+    persistSession: true,
+    autoRefreshToken: true,
     detectSessionInUrl: false
-  }
+  },
+  realtime: {
+    params: {
+      eventsPerSecond: 10,
+    },
+  },
 })
 
 export interface Product {
@@ -25,6 +30,9 @@ export interface Product {
   max_retail_price: number;
   category_id: string | null;
   created_at?: string;
+  categories?: {
+    name: string;
+  } | null;
 }
 
 export interface Category {

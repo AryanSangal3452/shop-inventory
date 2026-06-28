@@ -33,6 +33,9 @@ function App() {
   })
   const [isSubmitting, setIsSubmitting] = useState(false)
 
+  // 🟢 PERSISTENT REAL-TIME BROKER REFERENCE
+  const [globalChannel, setGlobalChannel] = useState<any>(null)
+
   // Check user session on application startup
   useEffect(() => {
     const checkSession = async () => {
@@ -51,7 +54,7 @@ function App() {
     checkSession()
   }, [])
 
-  // Force migrations and fetch accurate state tables on user login change
+  // Sync tables layout representation on user session transitions
   useEffect(() => {
     if (isLoggedIn && currentUser) {
       runLocalFileMigration().then(() => {
@@ -60,17 +63,16 @@ function App() {
     }
   }, [isLoggedIn, currentUser])
 
-  // 🟢 PURE-CODE CLIENT BROADCAST PIPELINE (No Dashboard Needed)
+  // 🟢 CENTRALIZED REALTIME CONNECTION CONTROLLER
   useEffect(() => {
     if (!isLoggedIn || !currentUser) return
 
-    // Initializing custom dynamic websocket room context
-    const broadcastChannel = supabase
+    const channelInstance = supabase
       .channel('app-client-sync', {
         config: {
           broadcast: { 
-            acknowledge: false,
-            self: false // Keeps sender app thread unbounced
+            acknowledge: true, // Confirm network packet deliverability
+            self: true // Force own changes to complete visual re-render loop
           }
         }
       })
@@ -78,21 +80,23 @@ function App() {
         'broadcast',
         { event: 'inventory_mutated' },
         async (payload) => {
-          console.log('Cross-device dynamic mutations intercepted:', payload)
-          // Refetch live items instantly into background view layout
+          console.log('Cross-device mutation broadcast received, updating view:', payload)
           await fetchData()
         }
       )
-      .subscribe((status) => {
-        console.log("Websocket code sync channel state:", status)
-      })
+
+    channelInstance.subscribe((status) => {
+      console.log("WebSocket Sync Pipeline Status:", status)
+    })
+
+    setGlobalChannel(channelInstance)
 
     return () => {
-      supabase.removeChannel(broadcastChannel)
+      supabase.removeChannel(channelInstance)
     }
   }, [isLoggedIn, currentUser])
 
-  // Clean storage device-to-device database dynamic data fallback migrator
+  // Device-to-device fallback sync recovery migrator
   async function runLocalFileMigration() {
     if (!currentUser) return
     try {
@@ -120,7 +124,7 @@ function App() {
         }
       }
     } catch (err) {
-      console.error("Background migration layer threw an error:", err)
+      console.error("Migration error background recovery task:", err)
     }
   }
 
@@ -134,7 +138,6 @@ function App() {
         .eq('user_email', currentUser)
 
       if (!error && cloudProducts) {
-        // Drop local stale caches to cleanly mirror cloud source truth states
         await offlineDb.products.where('user_email').equals(currentUser).delete()
         
         for (const item of cloudProducts) {
@@ -142,7 +145,7 @@ function App() {
         }
       }
     } catch (err) {
-      console.log("Application running offline state. Sourcing local IndexedDB fallback representations.")
+      console.log("App running offline. Loading stored cache storage indexes.")
     }
 
     try {
@@ -164,7 +167,7 @@ function App() {
     }
   }
 
-  // === NATIVE AUTH PROCEDURES ===
+  // === AUTH FORMS DISPATCHERS ===
   async function handleAuthSubmit(e: React.FormEvent) {
     e.preventDefault()
     const email = authEmail.trim().toLowerCase()
@@ -175,7 +178,7 @@ function App() {
     if (authMode === 'signup') {
       const { error } = await supabase.auth.signUp({ email, password })
       if (error) { alert(`Signup Failed: ${error.message}`); return }
-      alert('Global credentials stored! Proceeding to entry logs.')
+      alert('Global credentials configured! Moving to log portal.')
       setAuthMode('login')
       setAuthPassword('')
     } else {
@@ -200,14 +203,14 @@ function App() {
     setCategories([])
   }
 
-  // === DATA LAYERS AND VIEW FILTERS ===
+  // === DATA REGISTRY AND VIEW FILTERS ===
   const filteredProducts = products.filter(product => {
     if (!searchQuery) return true
     const query = searchQuery.toLowerCase()
     return product.name.toLowerCase().includes(query) || product.name.toLowerCase().startsWith(query)
   })
 
-  // 🟢 MUTATE SUBMIT HANDLER WITH LIVE PUSH BROADCAST TRIGGER
+  // 🟢 MUTATE SUBMIT ROUTINE (USING STABLE CHANNEL REFERENCE)
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!formData.name.trim() || !currentUser) return
@@ -235,20 +238,21 @@ function App() {
         }
       }
       
-      // Update local context
       await fetchData()
 
-      // 📡 FIRE TRANSMISSION EVENT: Triggers real-time sync across other listening client instances
-      await supabase.channel('app-client-sync').send({
-        type: 'broadcast',
-        event: 'inventory_mutated',
-        payload: { command: 'sync_mutation', targetUser: currentUser }
-      })
+      // 📡 BROADCAST INTERFACE REFRESH VIA GLOBAL BROKER REFERENCE
+      if (globalChannel) {
+        await globalChannel.send({
+          type: 'broadcast',
+          event: 'inventory_mutated',
+          payload: { tracking: 'mutation', workerUser: currentUser }
+        })
+      }
 
       resetForm()
       setIsModalOpen(false)
     } catch (err) {
-      console.error("Cloud mutation failed, writing to fallback internal partition memory states:", err)
+      console.error("Cloud tracking write error, dropping to local memory buffer profiles:", err)
       const localId = 'local_' + Date.now()
       await offlineDb.products.add({ ...productData, id: localId, synced: 0 })
       await fetchData()
@@ -258,7 +262,7 @@ function App() {
     }
   }
 
-  // 🟢 DELETE MUTATE HANDLER WITH LIVE PUSH BROADCAST TRIGGER
+  // 🟢 MUTATE REMOVE ROUTINE (USING STABLE CHANNEL REFERENCE)
   async function handleDelete(id: string | number, name: string) {
     const confirmDelete = window.confirm(`Are you sure you want to delete "${name}"?`)
     if (!confirmDelete) return
@@ -267,17 +271,18 @@ function App() {
       await supabase.from('products').delete().eq('id', id)
       await offlineDb.products.delete(id)
       
-      // Update local state tables layout representation layer
       await fetchData()
 
-      // 📡 FIRE TRANSMISSION EVENT: Tells all other logged-in screens to remove the item immediately
-      await supabase.channel('app-client-sync').send({
-        type: 'broadcast',
-        event: 'inventory_mutated',
-        payload: { command: 'sync_deletion', droppedId: id }
-      })
+      // 📡 BROADCAST INTERFACE REFRESH VIA GLOBAL BROKER REFERENCE
+      if (globalChannel) {
+        await globalChannel.send({
+          type: 'broadcast',
+          event: 'inventory_mutated',
+          payload: { tracking: 'deletion', targetId: id }
+        })
+      }
     } catch (err) {
-      alert('Failed to execute item cleanup from data registries.')
+      alert('Failed to execute absolute record removal inside cloud indices.')
     }
   }
 
@@ -456,7 +461,7 @@ function App() {
             </div>
           ))}
         </div>
-      </main>
+      </header>
 
       <button onClick={() => setIsModalOpen(true)} className="fixed bottom-6 right-6 w-14 h-14 bg-emerald-600 text-white rounded-full shadow-lg flex items-center justify-center"><Plus className="w-7 h-7" /></button>
 
